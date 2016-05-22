@@ -1,0 +1,553 @@
+/**
+ * {@author: Alexander.Morgunov}
+ * https://github.com/saaaaaaaaasha
+ * 
+ * The Maze Runner: NXT maze solver robot
+ */
+
+#define DEBUG_MODE 0
+#define LOG_MODE 1
+
+#define MIN_SPEED 0
+#define MAX_SPEED 100
+#define SPEED 60
+#define SPEED_ERROR 10
+
+#define TIME_GO_FWD_BEFORE_INTERSECTION 260
+#define TIME_GO_FWD_AFTER_INTERSECTION 140
+#define TIME_TURN 690
+#define TIME_TURN_FOR_FINE_LINE 100
+#define TIME_WAIT_EVERY_STEP 2
+
+#define GFBI_RIGHT_DIFF 0
+#define TT_RIGHT_DIFF -135
+
+#define TURN_LEFT -1
+#define TURN_RIGHT 1
+#define TURN_STOP 0
+
+#define FWD 0
+#define LEFT 1
+#define RIGHT 2
+#define BACK 3
+#define STOP 4
+
+#define LEFT_HAND_DRIVE 1
+#define RIGHT_HAND_DRIVE 0
+#define ULTRASONIC_HAND_DRIVE 2
+
+#define	SENSOR_LINE_FOLLOWER_INDEX 0
+#define	SENSOR_DETECT_INTERSECTION_INDEX 1
+#define	SENSOR_ULTRASONIC_INDEX 2
+
+#define SENSOR_ULTRASONIC 30
+#define	SENSOR_LINE_FOLLOWER_LOWER 350
+#define	SENSOR_LINE_FOLLOWER_UPPER 550
+#define	SENSOR_LINE_FOLLOWER_MIDDLE 450
+#define	SENSOR_DETECT_INTERSECTION_LOWER 550
+#define	SENSOR_DETECT_INTERSECTION_UPPER 750
+#define	SENSOR_DETECT_INTERSECTION_MIDDLE 625
+
+#define SOUND_TURN_HEAD 1
+#define SOUND_TURN_AROUND 2
+#define SOUND_OUOUOU 3
+#define SOUND_FIND_LINE 4
+#define SOUND_PIPI 5 //0:25-0:26
+#define SOUND_PIPI2 6
+#define VOLUME 4
+
+#define MAX_STEP_TO_FIND_LINE 5
+
+#define MAP_SIZE 200
+#define CELL_NEW 0
+#define CELL_ACTIVE 1
+#define CELL_CLOSED 2 
+
+int isTurn = false;
+
+int cX = 0;
+int cY = 0;
+int currentDirection = FWD;
+
+int cellX[MAP_SIZE];
+int cellY[MAP_SIZE];
+int cellActive[MAP_SIZE];
+int lastCell = 0;
+
+/**
+ * Move one of the hand drive
+ */
+sub move(int handDrive, int speed) {
+	switch(handDrive){
+		case LEFT_HAND_DRIVE: OnFwd(OUT_A, speed); break;
+		case RIGHT_HAND_DRIVE: OnFwd(OUT_B, speed); break;
+		case ULTRASONIC_HAND_DRIVE:  OnFwd(OUT_C, speed); break;
+	}
+}
+
+/**
+ * Debug, why couldn't operate without you? :(
+ */
+sub debug(string text, const int screenY) {
+	if (DEBUG_MODE) {
+		TextOut(0, screenY, text);
+	}
+}
+
+
+/**
+ * Turn
+ */
+sub turn(int direction, int time) {
+	move(LEFT_HAND_DRIVE, direction * SPEED);
+	move(RIGHT_HAND_DRIVE, -direction * SPEED);	
+	Wait(time);
+}
+
+/**
+ * Move forward
+ */
+sub goForward(int time){
+	move(LEFT_HAND_DRIVE, SPEED);
+	move(RIGHT_HAND_DRIVE, SPEED);
+	Wait(time);
+}
+
+/**
+ * What are you doing?! You must stop, nigga
+ */
+sub stopMove(int time){
+	move(LEFT_HAND_DRIVE, 0);
+	move(RIGHT_HAND_DRIVE, 0);
+	Wait(time);
+}
+
+/**
+ * It's the most important function
+ * It plays a R8's sounds from star wars
+ */
+sub play(int type){
+	//PlaySound("test1.wav", NULL, SND_FILENAME); //check functions
+	//lejos.nxt.Sound.playSample(sound.wav);
+	//playSample(file.getPage(), RIFF_HDR_SIZE, dataLen, sampleRate, vol);
+	//ClearSounds();
+
+	string file =  "";
+	switch(type){
+		case SOUND_TURN_HEAD: file = "1.rso"; break;
+		case SOUND_TURN_AROUND: file = "2.rso"; break;
+		case SOUND_OUOUOU: file = "3.rso"; break;
+		case SOUND_FIND_LINE: file = "4.rso"; break;
+		case SOUND_PIPI: file = "5.rso"; break;
+		case SOUND_PIPI2: file = "5.rso"; break;
+	}
+
+	if (file != "") {
+		//PlaySoundFile(file);
+		PlayFileEx(file, VOLUME, true);
+	}
+}
+
+/**
+ * Turn head
+ */
+sub turnHead(int dir, int time, int speed) {
+	if (dir == TURN_STOP) {
+		move(ULTRASONIC_HAND_DRIVE, MIN_SPEED);
+	} else {
+		play(SOUND_TURN_HEAD);
+		move(ULTRASONIC_HAND_DRIVE, dir * speed);
+	}
+	Wait(time);
+}
+
+/**
+ * Turn right
+ */
+sub turnBack(){
+	play(SOUND_TURN_AROUND);
+	turn(TURN_LEFT, TIME_TURN*2-300);
+	goForward(TIME_GO_FWD_AFTER_INTERSECTION*1.5+0);
+}
+
+/**
+ * Turn right
+ */
+sub turnRight() {
+	goForward(TIME_GO_FWD_BEFORE_INTERSECTION+115);
+	turn(TURN_RIGHT, TIME_TURN+TT_RIGHT_DIFF);
+	goForward(TIME_GO_FWD_AFTER_INTERSECTION);
+}
+
+/**
+ * Turn left(active_sensor - sensor, which detect intersection)
+ */
+sub turnLeft() {
+	goForward(TIME_GO_FWD_BEFORE_INTERSECTION+80);
+	turn(TURN_LEFT, TIME_TURN-140);
+	goForward(TIME_GO_FWD_AFTER_INTERSECTION);
+}
+
+/**
+ * Generate random, I don't know why need this function
+ */
+bool randomProbability(int maxValue) {
+	int x = Random(maxValue);
+	int y = Random(maxValue);
+	if (x == y) {
+		return true;
+	}
+	return false;
+}
+
+/**
+ * Find line if lose it. 
+ * I think it do it, it must do it!
+ */
+bool findLine(){
+	play(SOUND_FIND_LINE);
+	int lastStep = MAX_STEP_TO_FIND_LINE;
+	int sensorValue = SensorNormalized(IN_3);
+	int activeTurn = TURN_LEFT;
+	stopMove(0);
+
+	for(int i = 1; i <= lastStep; i++) {
+		int j=0;
+		while (sensorValue >= SENSOR_LINE_FOLLOWER_UPPER && j < TIME_TURN_FOR_FINE_LINE * i) {
+			j++;
+			turn(activeTurn, 3);
+		}
+		//phew, it got
+		if (j < TIME_TURN_FOR_FINE_LINE * i - 5) {
+			return true;
+		}
+
+		if (activeTurn == TURN_LEFT) {
+			activeTurn = TURN_RIGHT;
+		}
+	}
+	
+	//robot died..
+	play(SOUND_OUOUOU);
+	return false;
+}
+
+/**
+ * Move to line
+ */
+sub lineFollow(int sensorValue) {
+	if (randomProbability(100)) {
+		play(SOUND_PIPI);
+	}
+	if(sensorValue >= SENSOR_LINE_FOLLOWER_MIDDLE){
+	  move(LEFT_HAND_DRIVE, SPEED - SPEED_ERROR);
+	  move(RIGHT_HAND_DRIVE, SPEED + SPEED_ERROR);
+	}
+	else if(sensorValue <=  SENSOR_LINE_FOLLOWER_MIDDLE ){
+	  move(LEFT_HAND_DRIVE, SPEED + SPEED_ERROR);
+	  move(RIGHT_HAND_DRIVE, SPEED - SPEED_ERROR);
+	}
+	else{
+		goForward(0);
+	}
+}
+
+/**
+ * Process next direction by current
+ */
+int processNextDirection(int nd, int currentDir, byte handle) {
+	int cd = currentDir;
+	if (cd == FWD) { cd = nd; }
+	else if (cd == RIGHT) {
+		if (nd == RIGHT) { cd = BACK; }
+		else if (nd == LEFT) { cd = FWD; }
+		else if (nd == BACK) { cd = LEFT; }	
+    //else {cd = FWD;}
+	} else if (cd == LEFT) {
+		if (nd == RIGHT) { cd = FWD; }
+		else if (nd == LEFT) { cd = BACK; }
+		else if (nd == BACK) { cd = RIGHT; }	
+		//else {cd = FWD;}
+	} else if (cd == BACK) {
+		if (nd == RIGHT) { cd = LEFT; }
+		else if (nd == LEFT) { cd = RIGHT; }
+		else if (nd == BACK) { cd = FWD; }	
+		//else {cd = FWD;}
+	}
+	fputs("\n-->" + NumToStr(currentDir) + "; " + NumToStr(nd) + "; " + NumToStr(cd) + " ]" + " \n\n",handle);
+
+	return cd;
+}
+
+/**
+ * Process next direction by current
+ */
+sub changeCell(int cd) {
+	if (cd == FWD) { cY++; }
+	else if (cd == RIGHT) { cX--; }
+	else if (cd == LEFT) { cX++; }
+	else if (cd == BACK) { cY--; }
+}
+
+int findCellIndex(int cX, int cY) {
+	for(int i = 0; i < lastCell; i++) {
+		if (cellX[i] == cX && cellY[i] == cY) {
+			return i;
+		}
+	}
+	return -1;
+}
+
+sub putCell(int cX, int cY) {
+
+	int detected = findCellIndex(cX, cY);
+	if (detected != -1) {
+		cellActive[detected]++;
+	} else {
+		cellX[lastCell] = cX;
+		cellY[lastCell] = cY;
+		cellActive[lastCell] = CELL_ACTIVE;
+		lastCell++;
+	}
+}
+
+bool checkNextCell(int direction, byte handle) {
+	int next = processNextDirection(direction, currentDirection, handle);
+	int ncY = cY, ncX = cX;
+	if (next == FWD) { ncY++; }
+	else if (next == RIGHT) { ncX++; }
+	else if (next == LEFT) { ncX--; }
+	else if (next == BACK) { ncY--; }
+	int index = findCellIndex(ncX, ncY);
+	if (index>-1 && cellActive[index] > CELL_ACTIVE) {
+		return false;
+	}
+	return true;
+}
+
+/**
+ * Detect wall and process right direction
+ */
+int detectWall(){
+	int forward, left, right;
+	
+	//values is chosen experimentally
+	int delay[3] = {500,500,500};
+	int timeTurn[3] = {123,215,102};
+	int result[4] = {1, 1, 1, 1};
+	
+	stopMove(0);
+	Wait(300);
+    forward = SensorUS(IN_3);
+    //debug(NumToStr(forward),LCD_LINE4);
+    //Wait(4000);
+	turnHead(TURN_LEFT, timeTurn[0], MAX_SPEED);
+	turnHead(TURN_STOP, delay[0], MIN_SPEED);
+    left = SensorUS(IN_3);
+	
+	turnHead(TURN_RIGHT, timeTurn[1], MAX_SPEED);
+	turnHead(TURN_STOP, delay[1], MIN_SPEED);
+	
+    right = SensorUS(IN_3);
+	turnHead(TURN_LEFT, timeTurn[2], MAX_SPEED);
+	turnHead(TURN_STOP, delay[2], MIN_SPEED);
+
+	if (left>2 && left<SENSOR_ULTRASONIC) {
+		result[LEFT] = 0;
+	} 
+	if(forward>2 && forward<SENSOR_ULTRASONIC) {
+		result[FWD] = 0;
+	} 
+	if(right>2 && right<SENSOR_ULTRASONIC) {
+		result[RIGHT] = 0;
+	}
+
+	//need check all direction 
+	/*for(int i=0; i < 4; i++) {
+		if (result[i] == 1) {
+			bool active = checkNextCell(i);
+			if (!active) {
+				result[i] = 0;
+			}
+		}
+	}*/
+
+  //debug(tt,LCD_LINE5);
+  //Wait(4000);
+
+	if (result[RIGHT]) { return RIGHT; } 
+	else if (result[FWD]) { return FWD; }
+	else if (result[LEFT]) { return LEFT; } 
+	else if (result[BACK]) { return BACK; }
+    
+    return STOP;
+}
+
+/**
+ * Detect way to turn in intersection
+ */
+sub processIntersection(byte handle){
+	
+	putCell(cX,cY);
+	//save current cell in file
+	fputs("[ " + NumToStr(cX) + "; " + NumToStr(cY) + " ]" + "\n",handle);
+
+    isTurn = true;
+    int k = 0;
+
+	int nd = detectWall(); //in fact it is an important function
+	int cd = processNextDirection(nd, currentDirection, handle); //change direction
+	if (cd == currentDirection) {
+    k = 1;
+    //changeCell(currentDirection); //change cell
+  } else {
+
+  }
+  
+  
+  
+  changeCell(cd);
+
+        if (cd == BACK && currentDirection == RIGHT) {
+            currentDirection = LEFT;
+        } else if (cd == FWD && currentDirection == RIGHT) {
+            currentDirection = RIGHT;
+        } else if (cd == BACK && currentDirection == LEFT) {
+            currentDirection = LEFT;
+        } else if (cd == FWD && currentDirection == LEFT) {
+            currentDirection = RIGHT;
+        } else if (cd == LEFT && currentDirection == BACK) {
+            currentDirection = RIGHT;
+        } else if (cd == RIGHT && currentDirection == BACK) {
+            currentDirection = LEFT;
+        } else if (cd == RIGHT && currentDirection == LEFT) {
+            currentDirection = BACK;
+        } else if (cd == LEFT && currentDirection == RIGHT) {
+            currentDirection = BACK;
+        }else {
+           currentDirection = cd;
+        }
+
+  fputs("[ " + NumToStr(cd) + "; " + NumToStr(nd) +  "; " + NumToStr(currentDirection) + " ]" + "\n\n",handle);
+
+
+  if (k == 1) {
+        currentDirection = FWD;
+  }
+	switch(nd){
+		case RIGHT: turnRight(); break;
+		case LEFT: turnLeft(); break;
+		case BACK:  turnBack(); break;
+		case FWD: goForward(300); break;
+		case STOP: stopMove(10000); break;
+	}
+	currentDirection = cd;
+}
+
+/**
+ * Logging everything
+ */
+sub logging(byte handle) {
+	if (LOG_MODE) {
+		fputs("[ " + NumToStr(cX) + "; " + NumToStr(cY) + " ]" + "  ",handle);
+		fputs("DIR: " + NumToStr(currentDirection) + " LAST CELL: " + NumToStr(lastCell) + "\n", handle);
+		for(int i = 0; i < lastCell; i++) {
+			fputs("[ " + NumToStr(i)+": " + NumToStr(cellX[i]) + ";" + NumToStr(cellY[i]) + ";" + NumToStr(cellActive[i]) + "]  ",handle);	
+		}
+		fputs("\n\n", handle);	
+	}
+	//Wait(200); //may be it's unnecessary
+} 
+
+task main(){
+	byte handle, handle2;
+	DeleteFile("map.txt");
+	CreateFile("map.txt", 10000, handle);
+	DeleteFile("log.txt");
+	CreateFile("log.txt", 10000, handle2);
+
+	//init sensors
+	SetSensorType(S1, IN_TYPE_LIGHT_ACTIVE);
+	SetSensorType(S2, IN_TYPE_LIGHT_ACTIVE);
+	SetSensorUltrasonic(S3);
+	
+	//sensors values
+	int sensors[3];
+
+	//first of all start with going forward
+	goForward(200);
+	play(SOUND_PIPI2);
+
+	ArrayInit(cellX, 0, MAP_SIZE);
+	ArrayInit(cellY, 0, MAP_SIZE);
+	ArrayInit(cellActive, CELL_NEW, MAP_SIZE);
+	cellActive[0] = CELL_CLOSED;
+
+	//moveeee
+	while(true) {
+		ClearScreen();
+				
+		//sensor's value array
+		sensors[SENSOR_LINE_FOLLOWER_INDEX] = SensorNormalized(IN_1);
+		sensors[SENSOR_DETECT_INTERSECTION_INDEX] = SensorNormalized(IN_2);
+		sensors[SENSOR_ULTRASONIC_INDEX] = SensorUS(IN_3);
+
+		//debug ouput
+		debug(NumToStr(sensors[SENSOR_LINE_FOLLOWER_INDEX])+" "+NumToStr(sensors[SENSOR_DETECT_INTERSECTION_INDEX])+" "+NumToStr(sensors[SENSOR_ULTRASONIC_INDEX]),LCD_LINE1);
+		
+
+		//detect intersection
+		if (!isTurn && sensors[SENSOR_DETECT_INTERSECTION_INDEX] < SENSOR_DETECT_INTERSECTION_MIDDLE) {
+			 debug("INTERSECTION MODE", LCD_LINE2);
+			 processIntersection(handle);
+			 if (cX == 0 && cY == 0) {
+         play(SOUND_TURN_HEAD);
+			 	 Wait(50000);
+			 }
+			 logging(handle2);
+			 //findLine();
+			 //if robot lost the line after turn, we try find line
+			 if(sensors[SENSOR_LINE_FOLLOWER_INDEX] >= SENSOR_LINE_FOLLOWER_UPPER) {
+			 	//debug("TRY FIND LINE", LCD_LINE2);
+			 	if (!findLine()) {
+			 	//	debug("LOST LINE", LCD_LINE2);
+			 		Wait(10000);
+			 	}
+			 }
+		} else {
+			debug("LINE FOLLOWER MODE", LCD_LINE2);
+			isTurn = false;
+			//move to line
+			lineFollow(sensors[SENSOR_LINE_FOLLOWER_INDEX]);
+		}
+
+		debug("X = " + NumToStr(cX) + "  Y = " + NumToStr(cY) + "  DIR: " + NumToStr(currentDirection) + " LAST CELL: " + NumToStr(lastCell), LCD_LINE3);
+
+		if (DEBUG_MODE) {
+			Wait(50);
+		}
+
+		//mini wait @todo may be delete this?
+		Wait(TIME_WAIT_EVERY_STEP);
+	}
+}
+
+/**
+ * Old parts
+ */
+/*
+	//_active_sensor=abs(_active_sensor%2-1);
+	//map turns
+	int turns[]={3,1,2,2,0,1,4,1,1,1,1,1,1,1,1,1,1,1,0,1,4,1,1,1,1,1,1,1,1,1,1,1};
+	//current block - index of turns[]
+	int cur_block = 0;
+	//end map turns[]
+	if( turns[cur_block] == STOP) break;
+	//The sensor is responsible for determining the intersection
+	
+	//processIntersection(turns[cur_block], handle);
+*/
+
+
+
+
